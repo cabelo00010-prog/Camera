@@ -3,11 +3,11 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Ângelo AI - Pose + Hands Tracker</title>
-  
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/holistic/holistic.js" crossorigin="anonymous"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <title>Ângelo AI - Multi-Person Detector</title>
+
+  <!-- TensorFlow.js + COCO-SSD -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
 
   <style>
     /* === Reset total === */
@@ -59,7 +59,16 @@
       border: 1px solid rgba(0, 255, 163, 0.2);
     }
 
-    /* Status da câmara (centro, desaparece) */
+    /* Contador de pessoas (lado direito do info) */
+    .people-count {
+      margin-left: 10px;
+      padding-left: 10px;
+      border-left: 1px solid rgba(0, 255, 163, 0.3);
+      color: #FF0066;
+      font-weight: bold;
+    }
+
+    /* Status da câmara (centro) */
     .status-overlay {
       top: 50%;
       left: 50%;
@@ -99,7 +108,25 @@
       display: none;
     }
 
-    /* === FPS counter (canto inferior direito) === */
+    /* Barra de progresso do modelo */
+    .progress-bar-container {
+      width: 200px;
+      height: 4px;
+      background: rgba(255,255,255,0.1);
+      border-radius: 2px;
+      margin: 10px auto 0;
+      overflow: hidden;
+    }
+
+    .progress-bar {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #00FFA3, #00FFFF);
+      border-radius: 2px;
+      transition: width 0.3s ease;
+    }
+
+    /* FPS counter */
     .fps-overlay {
       bottom: 20px;
       right: 20px;
@@ -111,7 +138,7 @@
       border-radius: 3px;
     }
 
-    /* === Botão de controlo (canto inferior esquerdo) === */
+    /* Controlos */
     .controls {
       position: absolute;
       bottom: 20px;
@@ -151,7 +178,7 @@
       border-color: #00FFA3;
     }
 
-    /* === Responsivo: mobile === */
+    /* Responsivo: mobile */
     @media (max-width: 600px) {
       .info-overlay { font-size: 9px; padding: 4px 8px; top: 10px; left: 10px; }
       .controls button { font-size: 9px; padding: 6px 10px; }
@@ -164,12 +191,16 @@
 <body>
   <!-- Overlays -->
   <div class="overlay info-overlay" role="status" aria-live="polite" id="infoOverlay">
-    ⚡ System: Pose + Hands
+    ⚡ System: Multi-Person Detection
+    <span class="people-count" id="peopleCount">0</span>
   </div>
 
   <div class="overlay status-overlay" id="statusOverlay">
-    <div class="spinner"></div>
-    <div id="statusText">A iniciar câmara...</div>
+    <div class="spinner" id="spinner"></div>
+    <div id="statusText">A carregar modelo...</div>
+    <div class="progress-bar-container">
+      <div class="progress-bar" id="progressBar"></div>
+    </div>
   </div>
 
   <div class="overlay fps-overlay" id="fpsOverlay">-- FPS</div>
@@ -179,72 +210,177 @@
     <button id="pauseBtn" aria-label="Pausar ou retomar deteção" title="Pausar/Retomar">⏸ Pausar</button>
     <button id="mirrorBtn" class="active" aria-label="Ativar ou desativar modo espelho" title="Modo Espelho">🪞 Espelho</button>
     <button id="screenshotBtn" aria-label="Tirar captura de ecrã" title="Capturar Screenshot">📸 Capturar</button>
+    <button id="detectBtn" aria-label="Alternar entre detetar só pessoas ou todos os objetos" title="Detetar objetos">📦 Objetos</button>
   </div>
 
   <!-- Elementos escondidos -->
   <video id="input_video" style="display:none" playsinline></video>
   <canvas id="output_canvas"></canvas>
 
-  <script type="module">
+  <script>
     // === Elementos DOM ===
     const videoElement = document.getElementById('input_video');
     const canvasElement = document.getElementById('output_canvas');
     const canvasCtx = canvasElement.getContext('2d');
     const statusOverlay = document.getElementById('statusOverlay');
     const statusText = document.getElementById('statusText');
+    const spinner = document.getElementById('spinner');
+    const progressBar = document.getElementById('progressBar');
     const fpsOverlay = document.getElementById('fpsOverlay');
+    const peopleCount = document.getElementById('peopleCount');
     const pauseBtn = document.getElementById('pauseBtn');
     const mirrorBtn = document.getElementById('mirrorBtn');
     const screenshotBtn = document.getElementById('screenshotBtn');
+    const detectBtn = document.getElementById('detectBtn');
 
     // === Estado ===
     let isPaused = false;
     let isMirror = true;
+    let onlyPeople = true; // por defeito só pessoas
+    let model = null;
+    let modelLoading = false;
     let frameCount = 0;
     let lastFpsTime = performance.now();
     let currentFps = 0;
-    let holisticInstance = null;
-    let cameraInstance = null;
+    let animationId = null;
+    let detectInterval = null;
+    const DETECT_INTERVAL_MS = 100; // ~10 FPS de deteção
 
-    // === Utilitário: Atraso para evitar flood ===
+    // === Cores para bounding boxes (cíclicas) ===
+    const BOX_COLORS = [
+      '#00FFA3', // verde menta
+      '#FF0066', // rosa choque
+      '#00FFFF', // ciano
+      '#FFAA00', // laranja
+      '#AA00FF', // roxo
+      '#FF4400'  // vermelho neon
+    ];
+
+    // === Utilitários ===
     const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-    // === FPS Counter ===
+    // === Atualizar FPS ===
     function updateFps() {
       frameCount++;
       const now = performance.now();
       if (now - lastFpsTime >= 1000) {
         currentFps = Math.round(frameCount * 1000 / (now - lastFpsTime));
-        fpsOverlay.textContent = `${currentFps} FPS`;
         frameCount = 0;
         lastFpsTime = now;
+        fpsOverlay.textContent = `${currentFps} FPS`;
       }
     }
 
-    // === Ajuste de proporções do canvas ===
+    // === Ajustar canvas ===
     function adjustCanvasSize() {
-      const vw = window.innerWidth;
-      const vh = window.innerHeight;
-      const vRatio = videoElement.videoWidth / videoElement.videoHeight;
-      const sRatio = vw / vh;
-
-      if (vRatio > sRatio) {
-        canvasElement.style.width = '100vw';
-        canvasElement.style.height = `${vw / vRatio}px`;
-      } else {
-        canvasElement.style.height = '100vh';
-        canvasElement.style.width = `${vh * vRatio}px`;
-      }
-    }
-
-    // === Callback do MediaPipe ===
-    function onResults(results) {
-      if (isPaused) return;
-
-      // Ajusta resolução interna do canvas
+      if (videoElement.videoWidth === 0) return;
       canvasElement.width = videoElement.videoWidth;
       canvasElement.height = videoElement.videoHeight;
+    }
 
+    // === Desenhar bounding boxes ===
+    function drawDetections(predictions) {
+      const w = canvasElement.width;
+      const h = canvasElement.height;
+
+      // Filtrar: só pessoas se onlyPeople=true
+      const filtered = onlyPeople
+        ? predictions.filter(p => p.class === 'person')
+        : predictions;
+
+      // Atualizar contador
+      peopleCount.textContent = filtered.length;
+
+      // Desenhar cada deteção
+      filtered.forEach((pred, index) => {
+        const [x, y, boxW, boxH] = pred.bbox;
+        const color = BOX_COLORS[index % BOX_COLORS.length];
+        const confidence = Math.round(pred.score * 100);
+        const label = onlyPeople 
+          ? `Pessoa ${index + 1}`
+          : `${pred.class} ${index + 1}`;
+
+        // === Bounding box com glow ===
+        canvasCtx.shadowColor = color;
+        canvasCtx.shadowBlur = 15;
+        canvasCtx.strokeStyle = color;
+        canvasCtx.lineWidth = 3;
+        canvasCtx.strokeRect(x, y, boxW, boxH);
+        canvasCtx.shadowBlur = 0;
+
+        // === Cantos neon (mais grossos nos cantos - estilo cyberpunk) ===
+        const cornerLen = Math.min(boxW, boxH) * 0.15;
+        canvasCtx.strokeStyle = color;
+        canvasCtx.lineWidth = 5;
+        
+        // Canto superior esquerdo
+        canvasCtx.beginPath();
+        canvasCtx.moveTo(x, y + cornerLen);
+        canvasCtx.lineTo(x, y);
+        canvasCtx.lineTo(x + cornerLen, y);
+        canvasCtx.stroke();
+
+        // Canto superior direito
+        canvasCtx.beginPath();
+        canvasCtx.moveTo(x + boxW - cornerLen, y);
+        canvasCtx.lineTo(x + boxW, y);
+        canvasCtx.lineTo(x + boxW, y + cornerLen);
+        canvasCtx.stroke();
+
+        // Canto inferior esquerdo
+        canvasCtx.beginPath();
+        canvasCtx.moveTo(x, y + boxH - cornerLen);
+        canvasCtx.lineTo(x, y + boxH);
+        canvasCtx.lineTo(x + cornerLen, y + boxH);
+        canvasCtx.stroke();
+
+        // Canto inferior direito
+        canvasCtx.beginPath();
+        canvasCtx.moveTo(x + boxW - cornerLen, y + boxH);
+        canvasCtx.lineTo(x + boxW, y + boxH);
+        canvasCtx.lineTo(x + boxW, y + boxH - cornerLen);
+        canvasCtx.stroke();
+
+        // === Label acima da box ===
+        const labelText = `${label} (${confidence}%)`;
+        canvasCtx.font = 'bold 14px Monaco, Consolas, monospace';
+        const textWidth = canvasCtx.measureText(labelText).width;
+
+        // Fundo do label
+        canvasCtx.fillStyle = color;
+        canvasCtx.globalAlpha = 0.85;
+        canvasCtx.fillRect(x, y - 24, textWidth + 16, 22);
+        canvasCtx.globalAlpha = 1.0;
+
+        // Texto do label
+        canvasCtx.fillStyle = '#000';
+        canvasCtx.font = 'bold 12px Monaco, Consolas, monospace';
+        canvasCtx.fillText(labelText, x + 8, y - 8);
+
+        // === Keypoints (centro da pessoa, olhos, etc.) - se disponíveis ===
+        // COCO-SSD não dá keypoints, mas podemos marcar o centro da box
+        const cx = x + boxW / 2;
+        const cy = y + boxH / 2;
+        
+        canvasCtx.shadowColor = color;
+        canvasCtx.shadowBlur = 8;
+        canvasCtx.fillStyle = color;
+        canvasCtx.beginPath();
+        canvasCtx.arc(cx, cy, 3, 0, Math.PI * 2);
+        canvasCtx.fill();
+        canvasCtx.shadowBlur = 0;
+      });
+    }
+
+    // === Loop de deteção ===
+    function detectFrame() {
+      if (isPaused) {
+        animationId = requestAnimationFrame(detectFrame);
+        return;
+      }
+
+      // Limpa o canvas e desenha o frame da câmara
+      adjustCanvasSize();
       canvasCtx.save();
       canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
 
@@ -254,134 +390,106 @@
         canvasCtx.scale(-1, 1);
       }
 
-      // Desenha frame da câmara
-      canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
-
-      // === Desenhar Pose (Verde neon com glow) ===
-      if (results.poseLandmarks) {
-        canvasCtx.shadowColor = '#00FF00';
-        canvasCtx.shadowBlur = 8;
-        drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS, {
-          color: '#00FF66',
-          lineWidth: 5
-        });
-        canvasCtx.shadowBlur = 0;
-        drawLandmarks(canvasCtx, results.poseLandmarks, {
-          color: '#FF0066',
-          lineWidth: 2,
-          radius: 5
-        });
-      }
-
-      // === Desenhar Mãos (Azul ciano com glow) ===
-      const handConnectorStyle = { color: '#00FFFF', lineWidth: 4 };
-      canvasCtx.shadowColor = '#00FFFF';
-      canvasCtx.shadowBlur = 10;
-
-      if (results.leftHandLandmarks) {
-        drawConnectors(canvasCtx, results.leftHandLandmarks, HAND_CONNECTIONS, handConnectorStyle);
-      }
-      if (results.rightHandLandmarks) {
-        drawConnectors(canvasCtx, results.rightHandLandmarks, HAND_CONNECTIONS, handConnectorStyle);
-      }
-      canvasCtx.shadowBlur = 0;
-
-      // Landmarks das mãos (branco)
-      if (results.leftHandLandmarks) {
-        drawLandmarks(canvasCtx, results.leftHandLandmarks, {
-          color: '#FFFFFF',
-          radius: 3,
-          lineWidth: 1
-        });
-      }
-      if (results.rightHandLandmarks) {
-        drawLandmarks(canvasCtx, results.rightHandLandmarks, {
-          color: '#FFFFFF',
-          radius: 3,
-          lineWidth: 1
-        });
-      }
-
+      // Desenha o vídeo
+      canvasCtx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
       canvasCtx.restore();
 
-      // Atualiza FPS
+      // Deteção (a cada DETECT_INTERVAL_MS ms)
+      if (model && !modelLoading && videoElement.readyState >= 2) {
+        const now = performance.now();
+        if (!detectInterval || now - detectInterval >= DETECT_INTERVAL_MS) {
+          detectInterval = now;
+          model.detect(videoElement).then(predictions => {
+            // Desenha as deteções no canvas
+            canvasCtx.save();
+            if (isMirror) {
+              canvasCtx.translate(canvasElement.width, 0);
+              canvasCtx.scale(-1, 1);
+            }
+            drawDetections(predictions);
+            canvasCtx.restore();
+          }).catch(err => {
+            // Silêncio
+          });
+        }
+      }
+
       updateFps();
 
-      // Esconde status overlay após o primeiro frame
-      if (statusOverlay.style.opacity !== '0') {
+      // Esconde status após primeiro frame
+      if (statusOverlay.style.opacity !== '0' && videoElement.readyState >= 3) {
         statusOverlay.style.opacity = '0';
         setTimeout(() => { statusOverlay.style.display = 'none'; }, 400);
       }
+
+      animationId = requestAnimationFrame(detectFrame);
     }
 
-    // === Inicializar Holistic ===
-    function initHolistic() {
-      holisticInstance = new Holistic({
-        locateFile: (file) => {
-          return `https://cdn.jsdelivr.net/npm/@mediapipe/holistic/${file}`;
-        }
-      });
-
-      holisticInstance.setOptions({
-        modelComplexity: 0,
-        smoothLandmarks: true,
-        enableFaceGeometry: false,
-        minDetectionConfidence: 0.5,
-        minTrackingConfidence: 0.5
-      });
-
-      holisticInstance.onResults(onResults);
-    }
-
-    // === Inicializar Câmara ===
-    async function initCamera() {
-      const isMobile = window.innerWidth <= 768;
-      const camWidth = isMobile ? 640 : 1280;
-      const camHeight = isMobile ? 480 : 720;
-
-      cameraInstance = new Camera(videoElement, {
-        onFrame: async () => {
-          if (!isPaused && holisticInstance) {
-            try {
-              await holisticInstance.send({ image: videoElement });
-            } catch (err) {
-              // Erro silencioso para evitar flood de logs
-            }
-          }
-        },
-        width: camWidth,
-        height: camHeight
-      });
+    // === Inicializar modelo COCO-SSD ===
+    async function initModel() {
+      statusText.textContent = 'A carregar modelo de deteção...';
+      progressBar.style.width = '30%';
 
       try {
-        await cameraInstance.start();
+        model = await cocoSsd.load({
+          base: 'lite_mobilenet_v2', // Mais leve para mobile
+          modelUrl: undefined
+        });
+
+        progressBar.style.width = '100%';
+        await delay(300);
+        statusText.textContent = 'Modelo carregado! A iniciar câmara...';
+        return true;
+      } catch (err) {
+        console.error('Erro ao carregar modelo:', err);
+        statusOverlay.classList.add('error');
+        spinner.style.display = 'none';
+        progressBar.style.display = 'none';
+        statusText.textContent = '❌ Erro ao carregar modelo. Recarrega a página.';
+        return false;
+      }
+    }
+
+    // === Inicializar câmara ===
+    async function initCamera() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: 'environment', // câmara traseira primeiro
+            width: { ideal: 640 },
+            height: { ideal: 480 }
+          },
+          audio: false
+        });
+
+        videoElement.srcObject = stream;
+        await videoElement.play();
+
         statusText.textContent = 'Câmara ativa!';
-        // Ajusta canvas após o vídeo carregar
-        videoElement.addEventListener('loadeddata', () => {
-          adjustCanvasSize();
-        }, { once: true });
-        await delay(800);
+        await delay(500);
+        return true;
       } catch (err) {
         console.error('Erro ao iniciar câmara:', err);
         statusOverlay.classList.add('error');
-        statusText.textContent = '❌ Erro: Não foi possível aceder à câmara.\nVerifica as permissões.';
-        document.querySelector('.spinner').style.display = 'none';
+        spinner.style.display = 'none';
+        progressBar.style.display = 'none';
+
+        // Tentar câmara frontal se a traseira falhar
+        if (err.name === 'NotAllowedError') {
+          statusText.textContent = '❌ Permissão negada. Permite o acesso à câmara.';
+        } else {
+          statusText.textContent = '❌ Erro ao aceder à câmara. Verifica as permissões.';
+        }
+        return false;
       }
     }
 
     // === Screenshot ===
     function takeScreenshot() {
       try {
-        // Cria um canvas temporário com o espelho desfeito para a imagem ficar correta
-        const tempCanvas = document.createElement('canvas');
-        tempCanvas.width = canvasElement.width;
-        tempCanvas.height = canvasElement.height;
-        const tempCtx = tempCanvas.getContext('2d');
-        tempCtx.drawImage(canvasElement, 0, 0);
-
         const link = document.createElement('a');
-        link.download = `pose-capture-${Date.now()}.png`;
-        link.href = tempCanvas.toDataURL('image/png');
+        link.download = `detection-${Date.now()}.png`;
+        link.href = canvasElement.toDataURL('image/png');
         link.click();
       } catch (err) {
         console.error('Erro ao capturar screenshot:', err);
@@ -389,30 +497,29 @@
     }
 
     // === Event Listeners ===
-    // Pause
     pauseBtn.addEventListener('click', () => {
       isPaused = !isPaused;
       pauseBtn.textContent = isPaused ? '▶ Retomar' : '⏸ Pausar';
       pauseBtn.classList.toggle('active', isPaused);
     });
 
-    // Mirror
     mirrorBtn.addEventListener('click', () => {
       isMirror = !isMirror;
       mirrorBtn.classList.toggle('active', isMirror);
     });
 
-    // Screenshot
     screenshotBtn.addEventListener('click', takeScreenshot);
 
-    // Resize
-    window.addEventListener('resize', () => {
-      if (videoElement.videoWidth > 0) {
-        adjustCanvasSize();
-      }
+    detectBtn.addEventListener('click', () => {
+      onlyPeople = !onlyPeople;
+      detectBtn.classList.toggle('active', !onlyPeople);
+      detectBtn.textContent = onlyPeople ? '📦 Objetos' : '🧑 Pessoas';
     });
 
-    // Tecla de atalho: Espaço para pausar
+    window.addEventListener('resize', () => {
+      if (videoElement.videoWidth > 0) adjustCanvasSize();
+    });
+
     document.addEventListener('keydown', (e) => {
       if (e.code === 'Space' && !e.repeat) {
         e.preventDefault();
@@ -422,15 +529,24 @@
 
     // === Arranque ===
     async function main() {
-      initHolistic();
-      await initCamera();
+      // 1. Carregar modelo
+      const modelOk = await initModel();
+      if (!modelOk) return;
+
+      // 2. Iniciar câmara
+      const camOk = await initCamera();
+      if (!camOk) return;
+
+      // 3. Iniciar loop de deteção
+      detectFrame();
     }
 
     main().catch(err => {
       console.error('Erro fatal:', err);
       statusOverlay.classList.add('error');
-      statusText.textContent = '❌ Erro fatal ao iniciar aplicação.';
-      document.querySelector('.spinner').style.display = 'none';
+      spinner.style.display = 'none';
+      progressBar.style.display = 'none';
+      statusText.textContent = '❌ Erro fatal ao iniciar. Recarrega a página.';
     });
   </script>
 </body>
