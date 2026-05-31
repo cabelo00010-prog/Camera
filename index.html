@@ -3,109 +3,155 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Ângelo AI - Multi-Person Detector</title>
-
-  <!-- TensorFlow.js + COCO-SSD -->
-  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+  <title>Ângelo AI - Pose + Hands Tracker</title>
+  
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/holistic/holistic.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
 
   <style>
-    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
-    body, html {
-      width: 100%; height: 100%; overflow: hidden; background-color: #000;
-      font-family: 'Monaco', 'Consolas', 'Courier New', monospace;
-      user-select: none; -webkit-user-select: none; touch-action: none;
+    /* === Reset total === */
+    *, *::before, *::after { 
+      margin: 0; 
+      padding: 0; 
+      box-sizing: border-box; 
     }
-    canvas { display: block; width: 100vw; height: 100vh; object-fit: cover; }
+    
+    body, html { 
+      width: 100%; 
+      height: 100%; 
+      overflow: hidden; 
+      background-color: #000; 
+      font-family: 'Monaco', 'Consolas', 'Courier New', monospace;
+      user-select: none;
+      -webkit-user-select: none;
+      touch-action: none;
+    }
 
+    /* === Canvas === */
+    canvas { 
+      display: block;
+      width: 100vw; 
+      height: 100vh; 
+      object-fit: cover;
+    }
+
+    /* === Overlays === */
     .overlay {
       position: absolute;
       pointer-events: none;
       z-index: 10;
       transition: opacity 0.3s ease;
     }
+
+    /* Info canto superior esquerdo */
     .info-overlay {
-      top: 15px; left: 15px;
+      top: 15px;
+      left: 15px;
       color: rgba(0, 255, 163, 0.85);
-      font-size: 11px; letter-spacing: 1.5px;
+      font-size: 11px;
+      letter-spacing: 1.5px;
       text-transform: uppercase;
       text-shadow: 0 0 10px rgba(0, 255, 163, 0.3);
       background: rgba(0, 0, 0, 0.6);
-      padding: 6px 12px; border-radius: 4px;
+      padding: 6px 12px;
+      border-radius: 4px;
       border: 1px solid rgba(0, 255, 163, 0.2);
     }
-    .people-count {
-      margin-left: 10px; padding-left: 10px;
-      border-left: 1px solid rgba(0, 255, 163, 0.3);
-      color: #FF0066; font-weight: bold;
-    }
+
+    /* Status da câmara (centro, desaparece) */
     .status-overlay {
-      top: 50%; left: 50%;
+      top: 50%;
+      left: 50%;
       transform: translate(-50%, -50%);
-      color: #fff; font-size: 18px; letter-spacing: 2px;
-      text-transform: uppercase; text-align: center;
+      color: #fff;
+      font-size: 18px;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      text-align: center;
       background: rgba(0, 0, 0, 0.8);
-      padding: 20px 30px; border-radius: 8px;
+      padding: 20px 30px;
+      border-radius: 8px;
       border: 1px solid rgba(255, 255, 255, 0.1);
     }
+
     .status-overlay .spinner {
-      display: inline-block; width: 24px; height: 24px;
+      display: inline-block;
+      width: 24px;
+      height: 24px;
       border: 3px solid rgba(0, 255, 163, 0.3);
       border-top-color: #00FFA3;
       border-radius: 50%;
       animation: spin 0.8s linear infinite;
       margin-bottom: 12px;
     }
-    @keyframes spin { to { transform: rotate(360deg); } }
-    .status-overlay.error { border-color: rgba(255, 50, 50, 0.5); color: #ff4444; }
-    .status-overlay.error .spinner { display: none; }
 
-    .progress-bar-container {
-      width: 200px; height: 4px;
-      background: rgba(255,255,255,0.1);
-      border-radius: 2px; margin: 10px auto 0; overflow: hidden;
+    @keyframes spin {
+      to { transform: rotate(360deg); }
     }
-    .progress-bar {
-      height: 100%; width: 0%;
-      background: linear-gradient(90deg, #00FFA3, #00FFFF);
-      border-radius: 2px; transition: width 0.3s ease;
+
+    .status-overlay.error {
+      border-color: rgba(255, 50, 50, 0.5);
+      color: #ff4444;
     }
+
+    .status-overlay.error .spinner {
+      display: none;
+    }
+
+    /* === FPS counter (canto inferior direito) === */
     .fps-overlay {
-      bottom: 20px; right: 20px;
+      bottom: 20px;
+      right: 20px;
       color: rgba(0, 255, 163, 0.5);
-      font-size: 10px; letter-spacing: 1px;
+      font-size: 10px;
+      letter-spacing: 1px;
       background: rgba(0, 0, 0, 0.5);
-      padding: 4px 8px; border-radius: 3px;
+      padding: 4px 8px;
+      border-radius: 3px;
     }
+
+    /* === Botão de controlo (canto inferior esquerdo) === */
     .controls {
       position: absolute;
-      bottom: 20px; left: 20px;
+      bottom: 20px;
+      left: 20px;
       z-index: 20;
-      display: flex; gap: 10px;
+      display: flex;
+      gap: 10px;
       pointer-events: none;
-      flex-wrap: wrap;
     }
+
     .controls button {
       pointer-events: auto;
       background: rgba(0, 0, 0, 0.6);
       border: 1px solid rgba(0, 255, 163, 0.3);
       color: rgba(0, 255, 163, 0.8);
-      padding: 8px 14px; border-radius: 6px;
+      padding: 8px 14px;
+      border-radius: 6px;
       font-family: 'Monaco', monospace;
-      font-size: 11px; letter-spacing: 1px;
+      font-size: 11px;
+      letter-spacing: 1px;
       text-transform: uppercase;
       cursor: pointer;
       transition: all 0.2s ease;
       backdrop-filter: blur(4px);
       -webkit-backdrop-filter: blur(4px);
     }
-    .controls button:hover, .controls button:active {
+
+    .controls button:hover,
+    .controls button:active {
       background: rgba(0, 255, 163, 0.15);
       border-color: rgba(0, 255, 163, 0.6);
       box-shadow: 0 0 15px rgba(0, 255, 163, 0.2);
     }
-    .controls button.active { background: rgba(0, 255, 163, 0.2); border-color: #00FFA3; }
 
+    .controls button.active {
+      background: rgba(0, 255, 163, 0.2);
+      border-color: #00FFA3;
+    }
+
+    /* === Responsivo: mobile === */
     @media (max-width: 600px) {
       .info-overlay { font-size: 9px; padding: 4px 8px; top: 10px; left: 10px; }
       .controls button { font-size: 9px; padding: 6px 10px; }
@@ -114,298 +160,259 @@
     }
   </style>
 </head>
+
 <body>
+  <!-- Overlays -->
   <div class="overlay info-overlay" role="status" aria-live="polite" id="infoOverlay">
-    ⚡ System: Multi-Person Detection
-    <span class="people-count" id="peopleCount">0</span>
+    ⚡ System: Pose + Hands
   </div>
+
   <div class="overlay status-overlay" id="statusOverlay">
-    <div class="spinner" id="spinner"></div>
-    <div id="statusText">A carregar modelo...</div>
-    <div class="progress-bar-container">
-      <div class="progress-bar" id="progressBar"></div>
-    </div>
+    <div class="spinner"></div>
+    <div id="statusText">A iniciar câmara...</div>
   </div>
+
   <div class="overlay fps-overlay" id="fpsOverlay">-- FPS</div>
 
+  <!-- Controlos -->
   <div class="controls" role="toolbar" aria-label="Controlos da câmara">
-    <button id="pauseBtn" aria-label="Pausar ou retomar">⏸ Pausar</button>
-    <button id="mirrorBtn" class="active" aria-label="Ativar ou desativar modo espelho">🪞 Espelho</button>
-    <button id="screenshotBtn" aria-label="Tirar captura">📸 Capturar</button>
-    <button id="detectBtn" aria-label="Alternar entre pessoas e objetos">📦 Objetos</button>
+    <button id="pauseBtn" aria-label="Pausar ou retomar deteção" title="Pausar/Retomar">⏸ Pausar</button>
+    <button id="mirrorBtn" class="active" aria-label="Ativar ou desativar modo espelho" title="Modo Espelho">🪞 Espelho</button>
+    <button id="screenshotBtn" aria-label="Tirar captura de ecrã" title="Capturar Screenshot">📸 Capturar</button>
   </div>
 
+  <!-- Elementos escondidos -->
   <video id="input_video" style="display:none" playsinline></video>
   <canvas id="output_canvas"></canvas>
 
-  <script>
+  <script type="module">
+    // === Elementos DOM ===
     const videoElement = document.getElementById('input_video');
     const canvasElement = document.getElementById('output_canvas');
     const canvasCtx = canvasElement.getContext('2d');
     const statusOverlay = document.getElementById('statusOverlay');
     const statusText = document.getElementById('statusText');
-    const spinner = document.getElementById('spinner');
-    const progressBar = document.getElementById('progressBar');
     const fpsOverlay = document.getElementById('fpsOverlay');
-    const peopleCount = document.getElementById('peopleCount');
     const pauseBtn = document.getElementById('pauseBtn');
     const mirrorBtn = document.getElementById('mirrorBtn');
     const screenshotBtn = document.getElementById('screenshotBtn');
-    const detectBtn = document.getElementById('detectBtn');
 
+    // === Estado ===
     let isPaused = false;
     let isMirror = true;
-    let onlyPeople = true;
-    let model = null;
-    let modelLoading = false;
     let frameCount = 0;
     let lastFpsTime = performance.now();
     let currentFps = 0;
-    let animationId = null;
-    let lastDetectTime = 0;
-    const DETECT_INTERVAL_MS = 100;
+    let holisticInstance = null;
+    let cameraInstance = null;
 
-    // Guarda as últimas previsões para desenhar em CADA frame
-    let lastPredictions = [];
-
-    const BOX_COLORS = [
-      '#00FFA3', '#FF0066', '#00FFFF', '#FFAA00', '#AA00FF', '#FF4400'
-    ];
-
+    // === Utilitário: Atraso para evitar flood ===
     const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
+    // === FPS Counter ===
+    function updateFps() {
+      frameCount++;
+      const now = performance.now();
+      if (now - lastFpsTime >= 1000) {
+        currentFps = Math.round(frameCount * 1000 / (now - lastFpsTime));
+        fpsOverlay.textContent = `${currentFps} FPS`;
+        frameCount = 0;
+        lastFpsTime = now;
+      }
+    }
+
+    // === Ajuste de proporções do canvas ===
     function adjustCanvasSize() {
-      if (videoElement.videoWidth === 0) return;
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const vRatio = videoElement.videoWidth / videoElement.videoHeight;
+      const sRatio = vw / vh;
+
+      if (vRatio > sRatio) {
+        canvasElement.style.width = '100vw';
+        canvasElement.style.height = `${vw / vRatio}px`;
+      } else {
+        canvasElement.style.height = '100vh';
+        canvasElement.style.width = `${vh * vRatio}px`;
+      }
+    }
+
+    // === Callback do MediaPipe ===
+    function onResults(results) {
+      if (isPaused) return;
+
+      // Ajusta resolução interna do canvas
       canvasElement.width = videoElement.videoWidth;
       canvasElement.height = videoElement.videoHeight;
-    }
 
-    function drawDetections() {
-      const predictions = lastPredictions;
-      const filtered = onlyPeople
-        ? predictions.filter(p => p.class === 'person')
-        : predictions;
-
-      peopleCount.textContent = filtered.length;
-
-      filtered.forEach((pred, index) => {
-        const [x, y, boxW, boxH] = pred.bbox;
-        const color = BOX_COLORS[index % BOX_COLORS.length];
-        const confidence = Math.round(pred.score * 100);
-        const label = onlyPeople
-          ? `Pessoa ${index + 1}`
-          : `${pred.class} ${index + 1}`;
-
-        // === Bounding box neon ===
-        canvasCtx.shadowColor = color;
-        canvasCtx.shadowBlur = 15;
-        canvasCtx.strokeStyle = color;
-        canvasCtx.lineWidth = 3;
-        canvasCtx.strokeRect(x, y, boxW, boxH);
-        canvasCtx.shadowBlur = 0;
-
-        // === Cantos neon (cyberpunk) ===
-        const cornerLen = Math.min(boxW, boxH) * 0.15;
-        canvasCtx.strokeStyle = color;
-        canvasCtx.lineWidth = 5;
-
-        // Superior esquerdo
-        canvasCtx.beginPath();
-        canvasCtx.moveTo(x, y + cornerLen);
-        canvasCtx.lineTo(x, y);
-        canvasCtx.lineTo(x + cornerLen, y);
-        canvasCtx.stroke();
-
-        // Superior direito
-        canvasCtx.beginPath();
-        canvasCtx.moveTo(x + boxW - cornerLen, y);
-        canvasCtx.lineTo(x + boxW, y);
-        canvasCtx.lineTo(x + boxW, y + cornerLen);
-        canvasCtx.stroke();
-
-        // Inferior esquerdo
-        canvasCtx.beginPath();
-        canvasCtx.moveTo(x, y + boxH - cornerLen);
-        canvasCtx.lineTo(x, y + boxH);
-        canvasCtx.lineTo(x + cornerLen, y + boxH);
-        canvasCtx.stroke();
-
-        // Inferior direito
-        canvasCtx.beginPath();
-        canvasCtx.moveTo(x + boxW - cornerLen, y + boxH);
-        canvasCtx.lineTo(x + boxW, y + boxH);
-        canvasCtx.lineTo(x + boxW, y + boxH - cornerLen);
-        canvasCtx.stroke();
-
-        // === Label com fundo ===
-        const labelText = `${label} (${confidence}%)`;
-        canvasCtx.font = 'bold 14px Monaco, Consolas, monospace';
-        const textWidth = canvasCtx.measureText(labelText).width;
-
-        canvasCtx.fillStyle = color;
-        canvasCtx.globalAlpha = 0.85;
-        canvasCtx.fillRect(x, y - 24, textWidth + 16, 22);
-        canvasCtx.globalAlpha = 1.0;
-
-        canvasCtx.fillStyle = '#000';
-        canvasCtx.font = 'bold 12px Monaco, Consolas, monospace';
-        canvasCtx.fillText(labelText, x + 8, y - 8);
-
-        // === Ponto central ===
-        const cx = x + boxW / 2;
-        const cy = y + boxH / 2;
-        canvasCtx.shadowColor = color;
-        canvasCtx.shadowBlur = 8;
-        canvasCtx.fillStyle = color;
-        canvasCtx.beginPath();
-        canvasCtx.arc(cx, cy, 3, 0, Math.PI * 2);
-        canvasCtx.fill();
-        canvasCtx.shadowBlur = 0;
-      });
-    }
-
-    // === Loop principal (desenha SEMPRE as últimas previsões) ===
-    function detectFrame() {
-      if (isPaused) {
-        animationId = requestAnimationFrame(detectFrame);
-        return;
-      }
-
-      adjustCanvasSize();
       canvasCtx.save();
       canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
 
+      // Modo espelho
       if (isMirror) {
         canvasCtx.translate(canvasElement.width, 0);
         canvasCtx.scale(-1, 1);
       }
 
-      // Desenha o vídeo
-      canvasCtx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
+      // Desenha frame da câmara
+      canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+      // === Desenhar Pose (Verde neon com glow) ===
+      if (results.poseLandmarks) {
+        canvasCtx.shadowColor = '#00FF00';
+        canvasCtx.shadowBlur = 8;
+        drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS, {
+          color: '#00FF66',
+          lineWidth: 5
+        });
+        canvasCtx.shadowBlur = 0;
+        drawLandmarks(canvasCtx, results.poseLandmarks, {
+          color: '#FF0066',
+          lineWidth: 2,
+          radius: 5
+        });
+      }
+
+      // === Desenhar Mãos (Azul ciano com glow) ===
+      const handConnectorStyle = { color: '#00FFFF', lineWidth: 4 };
+      canvasCtx.shadowColor = '#00FFFF';
+      canvasCtx.shadowBlur = 10;
+
+      if (results.leftHandLandmarks) {
+        drawConnectors(canvasCtx, results.leftHandLandmarks, HAND_CONNECTIONS, handConnectorStyle);
+      }
+      if (results.rightHandLandmarks) {
+        drawConnectors(canvasCtx, results.rightHandLandmarks, HAND_CONNECTIONS, handConnectorStyle);
+      }
+      canvasCtx.shadowBlur = 0;
+
+      // Landmarks das mãos (branco)
+      if (results.leftHandLandmarks) {
+        drawLandmarks(canvasCtx, results.leftHandLandmarks, {
+          color: '#FFFFFF',
+          radius: 3,
+          lineWidth: 1
+        });
+      }
+      if (results.rightHandLandmarks) {
+        drawLandmarks(canvasCtx, results.rightHandLandmarks, {
+          color: '#FFFFFF',
+          radius: 3,
+          lineWidth: 1
+        });
+      }
+
       canvasCtx.restore();
 
-      // Desenha as deteções (sempre, baseado no lastPredictions)
-      canvasCtx.save();
-      if (isMirror) {
-        canvasCtx.translate(canvasElement.width, 0);
-        canvasCtx.scale(-1, 1);
-      }
-      drawDetections();
-      canvasCtx.restore();
+      // Atualiza FPS
+      updateFps();
 
-      // Dispara deteção (apenas a cada ~100ms, atualiza lastPredictions)
-      if (model && !modelLoading && videoElement.readyState >= 2) {
-        const now = performance.now();
-        if (now - lastDetectTime >= DETECT_INTERVAL_MS) {
-          lastDetectTime = now;
-          model.detect(videoElement).then(predictions => {
-            lastPredictions = predictions;
-          }).catch(() => {});
-        }
-      }
-
-      // FPS
-      frameCount++;
-      const now2 = performance.now();
-      if (now2 - lastFpsTime >= 1000) {
-        currentFps = Math.round(frameCount * 1000 / (now2 - lastFpsTime));
-        frameCount = 0;
-        lastFpsTime = now2;
-        fpsOverlay.textContent = `${currentFps} FPS`;
-      }
-
-      // Esconde status
-      if (statusOverlay.style.opacity !== '0' && videoElement.readyState >= 3) {
+      // Esconde status overlay após o primeiro frame
+      if (statusOverlay.style.opacity !== '0') {
         statusOverlay.style.opacity = '0';
         setTimeout(() => { statusOverlay.style.display = 'none'; }, 400);
       }
-
-      animationId = requestAnimationFrame(detectFrame);
     }
 
-    async function initModel() {
-      statusText.textContent = 'A carregar modelo de deteção...';
-      progressBar.style.width = '30%';
-      try {
-        model = await cocoSsd.load({ base: 'lite_mobilenet_v2' });
-        progressBar.style.width = '100%';
-        await delay(300);
-        statusText.textContent = 'Modelo carregado! A iniciar câmara...';
-        return true;
-      } catch (err) {
-        console.error('Erro ao carregar modelo:', err);
-        statusOverlay.classList.add('error');
-        spinner.style.display = 'none';
-        progressBar.style.display = 'none';
-        statusText.textContent = '❌ Erro ao carregar modelo. Recarrega a página.';
-        return false;
-      }
+    // === Inicializar Holistic ===
+    function initHolistic() {
+      holisticInstance = new Holistic({
+        locateFile: (file) => {
+          return `https://cdn.jsdelivr.net/npm/@mediapipe/holistic/${file}`;
+        }
+      });
+
+      holisticInstance.setOptions({
+        modelComplexity: 0,
+        smoothLandmarks: true,
+        enableFaceGeometry: false,
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.5
+      });
+
+      holisticInstance.onResults(onResults);
     }
 
+    // === Inicializar Câmara ===
     async function initCamera() {
+      const isMobile = window.innerWidth <= 768;
+      const camWidth = isMobile ? 640 : 1280;
+      const camHeight = isMobile ? 480 : 720;
+
+      cameraInstance = new Camera(videoElement, {
+        onFrame: async () => {
+          if (!isPaused && holisticInstance) {
+            try {
+              await holisticInstance.send({ image: videoElement });
+            } catch (err) {
+              // Erro silencioso para evitar flood de logs
+            }
+          }
+        },
+        width: camWidth,
+        height: camHeight
+      });
+
       try {
-        const isMobile = window.innerWidth <= 768;
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: 'environment',
-            width: { ideal: isMobile ? 480 : 640 },
-            height: { ideal: isMobile ? 360 : 480 }
-          },
-          audio: false
-        });
-        videoElement.srcObject = stream;
-        await videoElement.play();
+        await cameraInstance.start();
         statusText.textContent = 'Câmara ativa!';
-        await delay(500);
-        return true;
+        // Ajusta canvas após o vídeo carregar
+        videoElement.addEventListener('loadeddata', () => {
+          adjustCanvasSize();
+        }, { once: true });
+        await delay(800);
       } catch (err) {
         console.error('Erro ao iniciar câmara:', err);
         statusOverlay.classList.add('error');
-        spinner.style.display = 'none';
-        progressBar.style.display = 'none';
-        if (err.name === 'NotAllowedError') {
-          statusText.textContent = '❌ Permissão negada. Permite o acesso à câmara.';
-        } else {
-          statusText.textContent = '❌ Erro ao aceder à câmara. Verifica as permissões.';
-        }
-        return false;
+        statusText.textContent = '❌ Erro: Não foi possível aceder à câmara.\nVerifica as permissões.';
+        document.querySelector('.spinner').style.display = 'none';
       }
     }
 
+    // === Screenshot ===
     function takeScreenshot() {
       try {
+        // Cria um canvas temporário com o espelho desfeito para a imagem ficar correta
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = canvasElement.width;
+        tempCanvas.height = canvasElement.height;
+        const tempCtx = tempCanvas.getContext('2d');
+        tempCtx.drawImage(canvasElement, 0, 0);
+
         const link = document.createElement('a');
-        link.download = `detection-${Date.now()}.png`;
-        link.href = canvasElement.toDataURL('image/png');
+        link.download = `pose-capture-${Date.now()}.png`;
+        link.href = tempCanvas.toDataURL('image/png');
         link.click();
       } catch (err) {
         console.error('Erro ao capturar screenshot:', err);
       }
     }
 
+    // === Event Listeners ===
+    // Pause
     pauseBtn.addEventListener('click', () => {
       isPaused = !isPaused;
       pauseBtn.textContent = isPaused ? '▶ Retomar' : '⏸ Pausar';
       pauseBtn.classList.toggle('active', isPaused);
     });
 
+    // Mirror
     mirrorBtn.addEventListener('click', () => {
       isMirror = !isMirror;
       mirrorBtn.classList.toggle('active', isMirror);
     });
 
+    // Screenshot
     screenshotBtn.addEventListener('click', takeScreenshot);
 
-    detectBtn.addEventListener('click', () => {
-      onlyPeople = !onlyPeople;
-      detectBtn.classList.toggle('active', !onlyPeople);
-      detectBtn.textContent = onlyPeople ? '📦 Objetos' : '🧑 Pessoas';
-    });
-
+    // Resize
     window.addEventListener('resize', () => {
-      if (videoElement.videoWidth > 0) adjustCanvasSize();
+      if (videoElement.videoWidth > 0) {
+        adjustCanvasSize();
+      }
     });
 
+    // Tecla de atalho: Espaço para pausar
     document.addEventListener('keydown', (e) => {
       if (e.code === 'Space' && !e.repeat) {
         e.preventDefault();
@@ -413,20 +420,17 @@
       }
     });
 
+    // === Arranque ===
     async function main() {
-      const modelOk = await initModel();
-      if (!modelOk) return;
-      const camOk = await initCamera();
-      if (!camOk) return;
-      detectFrame();
+      initHolistic();
+      await initCamera();
     }
 
     main().catch(err => {
       console.error('Erro fatal:', err);
       statusOverlay.classList.add('error');
-      spinner.style.display = 'none';
-      progressBar.style.display = 'none';
-      statusText.textContent = '❌ Erro fatal ao iniciar. Recarrega a página.';
+      statusText.textContent = '❌ Erro fatal ao iniciar aplicação.';
+      document.querySelector('.spinner').style.display = 'none';
     });
   </script>
 </body>
