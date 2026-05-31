@@ -1,111 +1,437 @@
 <!DOCTYPE html>
-<html>
+<html lang="pt">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Ângelo AI - Fullscreen</title>
+  <title>Ângelo AI - Pose + Hands Tracker</title>
   
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/holistic/holistic.js" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
 
   <style>
-    /* Remove todas as margens e barras de scroll */
-    * { margin: 0; padding: 0; box-sizing: border-box; }
+    /* === Reset total === */
+    *, *::before, *::after { 
+      margin: 0; 
+      padding: 0; 
+      box-sizing: border-box; 
+    }
     
     body, html { 
       width: 100%; 
       height: 100%; 
       overflow: hidden; 
-      background-color: black; 
+      background-color: #000; 
+      font-family: 'Monaco', 'Consolas', 'Courier New', monospace;
+      user-select: none;
+      -webkit-user-select: none;
+      touch-action: none;
     }
 
-    /* O Canvas ocupa o ecrã inteiro e a imagem estica para cobrir tudo */
+    /* === Canvas === */
     canvas { 
+      display: block;
       width: 100vw; 
       height: 100vh; 
-      object-fit: cover; /* Garante que preenche tudo sem bordas pretas */
+      object-fit: cover;
     }
 
-    .info-overlay {
+    /* === Overlays === */
+    .overlay {
       position: absolute;
+      pointer-events: none;
+      z-index: 10;
+      transition: opacity 0.3s ease;
+    }
+
+    /* Info canto superior esquerdo */
+    .info-overlay {
       top: 15px;
       left: 15px;
-      color: rgba(0, 255, 0, 0.8);
-      font-family: 'Monaco', monospace;
-      font-size: 12px;
-      pointer-events: none; /* Não atrapalha o toque */
+      color: rgba(0, 255, 163, 0.85);
+      font-size: 11px;
+      letter-spacing: 1.5px;
       text-transform: uppercase;
+      text-shadow: 0 0 10px rgba(0, 255, 163, 0.3);
+      background: rgba(0, 0, 0, 0.6);
+      padding: 6px 12px;
+      border-radius: 4px;
+      border: 1px solid rgba(0, 255, 163, 0.2);
+    }
+
+    /* Status da câmara (centro, desaparece) */
+    .status-overlay {
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      color: #fff;
+      font-size: 18px;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      text-align: center;
+      background: rgba(0, 0, 0, 0.8);
+      padding: 20px 30px;
+      border-radius: 8px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .status-overlay .spinner {
+      display: inline-block;
+      width: 24px;
+      height: 24px;
+      border: 3px solid rgba(0, 255, 163, 0.3);
+      border-top-color: #00FFA3;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin-bottom: 12px;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .status-overlay.error {
+      border-color: rgba(255, 50, 50, 0.5);
+      color: #ff4444;
+    }
+
+    .status-overlay.error .spinner {
+      display: none;
+    }
+
+    /* === FPS counter (canto inferior direito) === */
+    .fps-overlay {
+      bottom: 20px;
+      right: 20px;
+      color: rgba(0, 255, 163, 0.5);
+      font-size: 10px;
       letter-spacing: 1px;
+      background: rgba(0, 0, 0, 0.5);
+      padding: 4px 8px;
+      border-radius: 3px;
+    }
+
+    /* === Botão de controlo (canto inferior esquerdo) === */
+    .controls {
+      position: absolute;
+      bottom: 20px;
+      left: 20px;
+      z-index: 20;
+      display: flex;
+      gap: 10px;
+      pointer-events: none;
+    }
+
+    .controls button {
+      pointer-events: auto;
+      background: rgba(0, 0, 0, 0.6);
+      border: 1px solid rgba(0, 255, 163, 0.3);
+      color: rgba(0, 255, 163, 0.8);
+      padding: 8px 14px;
+      border-radius: 6px;
+      font-family: 'Monaco', monospace;
+      font-size: 11px;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+    }
+
+    .controls button:hover,
+    .controls button:active {
+      background: rgba(0, 255, 163, 0.15);
+      border-color: rgba(0, 255, 163, 0.6);
+      box-shadow: 0 0 15px rgba(0, 255, 163, 0.2);
+    }
+
+    .controls button.active {
+      background: rgba(0, 255, 163, 0.2);
+      border-color: #00FFA3;
+    }
+
+    /* === Responsivo: mobile === */
+    @media (max-width: 600px) {
+      .info-overlay { font-size: 9px; padding: 4px 8px; top: 10px; left: 10px; }
+      .controls button { font-size: 9px; padding: 6px 10px; }
+      .fps-overlay { font-size: 8px; }
+      .status-overlay { font-size: 14px; padding: 15px 20px; }
     }
   </style>
 </head>
 
 <body>
-  <div class="info-overlay">System: Pose + Hands Fullscreen</div>
+  <!-- Overlays -->
+  <div class="overlay info-overlay" role="status" aria-live="polite" id="infoOverlay">
+    ⚡ System: Pose + Hands
+  </div>
+
+  <div class="overlay status-overlay" id="statusOverlay">
+    <div class="spinner"></div>
+    <div id="statusText">A iniciar câmara...</div>
+  </div>
+
+  <div class="overlay fps-overlay" id="fpsOverlay">-- FPS</div>
+
+  <!-- Controlos -->
+  <div class="controls" role="toolbar" aria-label="Controlos da câmara">
+    <button id="pauseBtn" aria-label="Pausar ou retomar deteção" title="Pausar/Retomar">⏸ Pausar</button>
+    <button id="mirrorBtn" class="active" aria-label="Ativar ou desativar modo espelho" title="Modo Espelho">🪞 Espelho</button>
+    <button id="screenshotBtn" aria-label="Tirar captura de ecrã" title="Capturar Screenshot">📸 Capturar</button>
+  </div>
+
+  <!-- Elementos escondidos -->
   <video id="input_video" style="display:none" playsinline></video>
   <canvas id="output_canvas"></canvas>
 
   <script type="module">
+    // === Elementos DOM ===
     const videoElement = document.getElementById('input_video');
     const canvasElement = document.getElementById('output_canvas');
     const canvasCtx = canvasElement.getContext('2d');
+    const statusOverlay = document.getElementById('statusOverlay');
+    const statusText = document.getElementById('statusText');
+    const fpsOverlay = document.getElementById('fpsOverlay');
+    const pauseBtn = document.getElementById('pauseBtn');
+    const mirrorBtn = document.getElementById('mirrorBtn');
+    const screenshotBtn = document.getElementById('screenshotBtn');
 
+    // === Estado ===
+    let isPaused = false;
+    let isMirror = true;
+    let frameCount = 0;
+    let lastFpsTime = performance.now();
+    let currentFps = 0;
+    let holisticInstance = null;
+    let cameraInstance = null;
+
+    // === Utilitário: Atraso para evitar flood ===
+    const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+    // === FPS Counter ===
+    function updateFps() {
+      frameCount++;
+      const now = performance.now();
+      if (now - lastFpsTime >= 1000) {
+        currentFps = Math.round(frameCount * 1000 / (now - lastFpsTime));
+        fpsOverlay.textContent = `${currentFps} FPS`;
+        frameCount = 0;
+        lastFpsTime = now;
+      }
+    }
+
+    // === Ajuste de proporções do canvas ===
+    function adjustCanvasSize() {
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const vRatio = videoElement.videoWidth / videoElement.videoHeight;
+      const sRatio = vw / vh;
+
+      if (vRatio > sRatio) {
+        canvasElement.style.width = '100vw';
+        canvasElement.style.height = `${vw / vRatio}px`;
+      } else {
+        canvasElement.style.height = '100vh';
+        canvasElement.style.width = `${vh * vRatio}px`;
+      }
+    }
+
+    // === Callback do MediaPipe ===
     function onResults(results) {
-      // Ajusta a resolução interna do canvas para a do vídeo
+      if (isPaused) return;
+
+      // Ajusta resolução interna do canvas
       canvasElement.width = videoElement.videoWidth;
       canvasElement.height = videoElement.videoHeight;
 
       canvasCtx.save();
       canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-      
-      // Desenha o frame da câmara
+
+      // Modo espelho
+      if (isMirror) {
+        canvasCtx.translate(canvasElement.width, 0);
+        canvasCtx.scale(-1, 1);
+      }
+
+      // Desenha frame da câmara
       canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
 
-      // Desenhar Corpo (Pose) - Verde neon
+      // === Desenhar Pose (Verde neon com glow) ===
       if (results.poseLandmarks) {
-        drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS,
-                       {color: '#00FF00', lineWidth: 5});
-        drawLandmarks(canvasCtx, results.poseLandmarks,
-                      {color: '#FF0000', lineWidth: 1, radius: 4});
+        canvasCtx.shadowColor = '#00FF00';
+        canvasCtx.shadowBlur = 8;
+        drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS, {
+          color: '#00FF66',
+          lineWidth: 5
+        });
+        canvasCtx.shadowBlur = 0;
+        drawLandmarks(canvasCtx, results.poseLandmarks, {
+          color: '#FF0066',
+          lineWidth: 2,
+          radius: 5
+        });
       }
 
-      // Desenhar Mãos - Azul Ciano
-      const handStyle = {color: '#00FFFF', lineWidth: 4};
+      // === Desenhar Mãos (Azul ciano com glow) ===
+      const handConnectorStyle = { color: '#00FFFF', lineWidth: 4 };
+      canvasCtx.shadowColor = '#00FFFF';
+      canvasCtx.shadowBlur = 10;
+
       if (results.leftHandLandmarks) {
-        drawConnectors(canvasCtx, results.leftHandLandmarks, HAND_CONNECTIONS, handStyle);
-        drawLandmarks(canvasCtx, results.leftHandLandmarks, {color: '#FFFFFF', radius: 2});
+        drawConnectors(canvasCtx, results.leftHandLandmarks, HAND_CONNECTIONS, handConnectorStyle);
       }
       if (results.rightHandLandmarks) {
-        drawConnectors(canvasCtx, results.rightHandLandmarks, HAND_CONNECTIONS, handStyle);
-        drawLandmarks(canvasCtx, results.rightHandLandmarks, {color: '#FFFFFF', radius: 2});
+        drawConnectors(canvasCtx, results.rightHandLandmarks, HAND_CONNECTIONS, handConnectorStyle);
+      }
+      canvasCtx.shadowBlur = 0;
+
+      // Landmarks das mãos (branco)
+      if (results.leftHandLandmarks) {
+        drawLandmarks(canvasCtx, results.leftHandLandmarks, {
+          color: '#FFFFFF',
+          radius: 3,
+          lineWidth: 1
+        });
+      }
+      if (results.rightHandLandmarks) {
+        drawLandmarks(canvasCtx, results.rightHandLandmarks, {
+          color: '#FFFFFF',
+          radius: 3,
+          lineWidth: 1
+        });
       }
 
       canvasCtx.restore();
+
+      // Atualiza FPS
+      updateFps();
+
+      // Esconde status overlay após o primeiro frame
+      if (statusOverlay.style.opacity !== '0') {
+        statusOverlay.style.opacity = '0';
+        setTimeout(() => { statusOverlay.style.display = 'none'; }, 400);
+      }
     }
 
-    const holistic = new Holistic({locateFile: (file) => {
-      return `https://cdn.jsdelivr.net/npm/@mediapipe/holistic/${file}`;
-    }});
+    // === Inicializar Holistic ===
+    function initHolistic() {
+      holisticInstance = new Holistic({
+        locateFile: (file) => {
+          return `https://cdn.jsdelivr.net/npm/@mediapipe/holistic/${file}`;
+        }
+      });
 
-    holistic.setOptions({
-      modelComplexity: 0, // Máxima velocidade para fullscreen
-      smoothLandmarks: true,
-      enableFaceGeometry: false, // Otimização total
-      minDetectionConfidence: 0.5,
-      minTrackingConfidence: 0.5
+      holisticInstance.setOptions({
+        modelComplexity: 0,
+        smoothLandmarks: true,
+        enableFaceGeometry: false,
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.5
+      });
+
+      holisticInstance.onResults(onResults);
+    }
+
+    // === Inicializar Câmara ===
+    async function initCamera() {
+      const isMobile = window.innerWidth <= 768;
+      const camWidth = isMobile ? 640 : 1280;
+      const camHeight = isMobile ? 480 : 720;
+
+      cameraInstance = new Camera(videoElement, {
+        onFrame: async () => {
+          if (!isPaused && holisticInstance) {
+            try {
+              await holisticInstance.send({ image: videoElement });
+            } catch (err) {
+              // Erro silencioso para evitar flood de logs
+            }
+          }
+        },
+        width: camWidth,
+        height: camHeight
+      });
+
+      try {
+        await cameraInstance.start();
+        statusText.textContent = 'Câmara ativa!';
+        // Ajusta canvas após o vídeo carregar
+        videoElement.addEventListener('loadeddata', () => {
+          adjustCanvasSize();
+        }, { once: true });
+        await delay(800);
+      } catch (err) {
+        console.error('Erro ao iniciar câmara:', err);
+        statusOverlay.classList.add('error');
+        statusText.textContent = '❌ Erro: Não foi possível aceder à câmara.\nVerifica as permissões.';
+        document.querySelector('.spinner').style.display = 'none';
+      }
+    }
+
+    // === Screenshot ===
+    function takeScreenshot() {
+      try {
+        // Cria um canvas temporário com o espelho desfeito para a imagem ficar correta
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = canvasElement.width;
+        tempCanvas.height = canvasElement.height;
+        const tempCtx = tempCanvas.getContext('2d');
+        tempCtx.drawImage(canvasElement, 0, 0);
+
+        const link = document.createElement('a');
+        link.download = `pose-capture-${Date.now()}.png`;
+        link.href = tempCanvas.toDataURL('image/png');
+        link.click();
+      } catch (err) {
+        console.error('Erro ao capturar screenshot:', err);
+      }
+    }
+
+    // === Event Listeners ===
+    // Pause
+    pauseBtn.addEventListener('click', () => {
+      isPaused = !isPaused;
+      pauseBtn.textContent = isPaused ? '▶ Retomar' : '⏸ Pausar';
+      pauseBtn.classList.toggle('active', isPaused);
     });
 
-    holistic.onResults(onResults);
-
-    const camera = new Camera(videoElement, {
-      onFrame: async () => {
-        await holistic.send({image: videoElement});
-      },
-      width: 1280,
-      height: 720
+    // Mirror
+    mirrorBtn.addEventListener('click', () => {
+      isMirror = !isMirror;
+      mirrorBtn.classList.toggle('active', isMirror);
     });
-    camera.start();
+
+    // Screenshot
+    screenshotBtn.addEventListener('click', takeScreenshot);
+
+    // Resize
+    window.addEventListener('resize', () => {
+      if (videoElement.videoWidth > 0) {
+        adjustCanvasSize();
+      }
+    });
+
+    // Tecla de atalho: Espaço para pausar
+    document.addEventListener('keydown', (e) => {
+      if (e.code === 'Space' && !e.repeat) {
+        e.preventDefault();
+        pauseBtn.click();
+      }
+    });
+
+    // === Arranque ===
+    async function main() {
+      initHolistic();
+      await initCamera();
+    }
+
+    main().catch(err => {
+      console.error('Erro fatal:', err);
+      statusOverlay.classList.add('error');
+      statusText.textContent = '❌ Erro fatal ao iniciar aplicação.';
+      document.querySelector('.spinner').style.display = 'none';
+    });
   </script>
 </body>
 </html>
