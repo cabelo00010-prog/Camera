@@ -49,9 +49,7 @@ Aplicação de deteção de corpo e mãos em tempo real usando **MediaPipe Holis
 | Android | Chrome | ✅ |
 | iOS | Safari | ⚠️ Pode exigir permissões |
 
-## 📸 Preview
 
-*(Adiciona aqui um screenshot ou GIF do projeto)*
 
 ## 📄 Licença
 
